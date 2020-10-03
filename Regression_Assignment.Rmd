@@ -1,0 +1,767 @@
+---
+title: 'Regression Practical Assignment 2018: Motorcycle insurance data'
+author: "P?ter P?l?s, Laura Perge, Ferdinand Popp"
+date: "March 5, 2018"
+output:
+  html_document:
+    fig_height: 7
+    fig_width: 10
+    theme: readable
+    toc: yes
+  pdf_document:
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Introduction: Motorcycle insurance data
+-------------------------
+
+For the assignment we consider a data set on motorcycle insurance policies.
+
+```{r data, tidy=FALSE}
+motorcycle <- read.table(
+  "motorcycle.txt", 
+  header = TRUE,
+  colClasses = c("numeric", "factor", "factor", "factor", "numeric", 
+                 "factor", "numeric", "numeric", "numeric")
+  )
+```
+
+```{r summary}
+summary(motorcycle)
+```
+
+The variables in the data set are:
+
+* **age**: Age in years of the policy holder.  
+* **gender**: Gender of the policy holder (M = male, F = female).
+* **zone**: Geographic zone in Sweden (categorical).
+* **mcClass**: The class of the motorcycle (ordinal, based on the EV ratio, which is a measure of the engine power relative to weight).
+* **vehicleAge**: Age of motorcycle in years.
+* **bonusClass**: The bonus class determined by the policy holder. A new driver starts at bonus level 1 (ordinal).
+* **duration**: The number of policy years.
+* **claims**: The number of claims for the policy.
+* **cost**: The total cost of the claims for the policy.
+
+We will start with an exploratory data analysis and then we move on to modeling the severity (Problem B).
+
+Exploratory data analysis
+-------------------------
+
+### General assessment
+
+We include the dependencies here:
+```{r deps, tidy=FALSE, warning=FALSE}
+library(ggplot2)
+library(gtools)
+library(reshape2)
+library(gridExtra)
+library(lattice)
+library(hexbin)
+library(pander)
+library(splines)
+```
+
+Firstly, we had to reduce our dataset by clearing it from all observations with claims equal to zero, and add the variable **severity** to the dataset defined as average cost ($\frac{cost}{claims}$).
+
+```{r subset1, tidy=FALSE}
+motorcycle.red <- subset(motorcycle, claims>0)
+motorcycle.red$severity <- motorcycle.red$cost/motorcycle.red$claims
+summary(motorcycle.red)
+```
+
+This decreases the number of observations significantly (from 64548 to 670) so we are checking what happens to the individual variables as a result of this transformation.
+
+We compare the density and barplots below  before and after the transformation (number of claims is a numerical variable but showing it on barplots gives a better visual representation of the data).
+
+```{r bardens orig, echo = TRUE}
+p.temp <- lapply(names(motorcycle), function(x)
+  ggplot(data = motorcycle[, x, drop = FALSE]) +
+    aes_string(x) + xlab(x) + ylab(""))
+gd <- geom_density(adjust = 2, fill = gray(0.5))
+gb <- geom_bar(fill = gray(0.5))
+
+grid.arrange(
+  p.temp[[1]] + gd,
+  p.temp[[2]] + gb,
+  p.temp[[3]] + gb,
+  p.temp[[4]] + gb,
+  p.temp[[5]] + gd,
+  p.temp[[6]] + gb,
+  p.temp[[7]] + gd,
+  p.temp[[8]] + gb, 
+  p.temp[[9]] + gd,
+  ncol = 3,
+  nrow = 3,
+  top = "Barplots and density plots of original dataset"
+)
+```
+
+```{r bardens new, echo = TRUE}
+p.temp <- lapply(names(motorcycle.red), function(x)
+  ggplot(data = motorcycle.red[, x, drop = FALSE]) +
+    aes_string(x) + xlab(x) + ylab(""))
+gd <- geom_density(adjust = 2, fill = gray(0.5))
+gb <- geom_bar(fill = gray(0.5))
+
+grid.arrange(
+  p.temp[[1]] + gd,
+  p.temp[[2]] + gb,
+  p.temp[[3]] + gb,
+  p.temp[[4]] + gb,
+  p.temp[[5]] + gd,
+  p.temp[[6]] + gb,
+  p.temp[[7]] + gd,
+  p.temp[[8]] + gb,
+  p.temp[[9]] + gd,
+  p.temp[[10]] + gd,
+  ncol = 3,
+  nrow = 4,
+  top = "Barplots and density plots of reduced dataset"
+)
+```
+
+We are stepping through the variables one by one, describing them in both the original and the reduced dataset:
+
+* **age**: On the original plot we can see that there are some observations ranging from 0 to 16 years which are a bit odd and the same holds for the right tail: age goes up even until 92. Another interesting thing is the two local maximums. Although the mean is close to the median in the original set, there are not a lot of observations directly around the mean but there are two peaks around the age 25 and 50 (which means most policies belong to people aged around these two numbers but there are not so much of them in between). By taking out the chunk with no claims there are two main changes in the distribution. The first is cutting off the most of the tails on both sides, the second is that the first local peak of the original dataset becomes the only one adding further to the right skewness of the distribution. A quick check reveals that in the original data around $22\%$ of the observations fall under 30 years while it is $47\%$ in the reduced set which suggests that younger people tend to actually claim money.
+
+* **gender**: The number of female policyholders is much smaller ($15\%$) than the number of males and it decreases even more in the new subset ($9\%$).
+
+* **zone**: The same dataset was used in the book, Non-Life Insurance Pricing with Generalized Linear Models (Chapter 2) by Ohlsson Esbjørn and Johansson Bjørn, where they have explanation for what the different zones stand for. We include these informations here, since later on, they will be important in terms of our analysis. From this book we know that: 
+
+*zone1*: Central and semi-central parts of Sweden's three largest cities
+
+*zone2*: Suburbs plus middle-sized cities
+
+*zone3*: Lesser towns, except those in 5 or 7
+
+*zone4*: Small towns and countryside, except 5-7
+
+*zone5*: Northern towns
+
+*zone6*: Northern countryside
+
+*zone7*: Gotland (Sweden's largest island)
+
+```{r zone, echo = TRUE}
+#number of observations per zones
+pander(summary(motorcycle.red$zone))
+
+```
+
+* **mcClass**: Its distribution does not change by a lot, in class 7 there are only 5 observations (4 after leaving zones 5-7) which we add to class 6 since they are both in the higher performance class and the means of the variables for the observations in class 6 do not change by much with the addition.
+
+```{r mcClass, echo = TRUE}
+#number of observations per mcClass
+pander(summary(motorcycle.red$mcClass))
+
+#means of variables for the subsets
+pander(summary(subset(motorcycle.red, mcClass==6 )))
+pander(summary(subset(motorcycle.red, mcClass==6 | mcClass==7 )))
+
+```
+
+* **vehicleAge**: By eliminating observations we cut off some of the right tail of the data (getting rid of most of the extreme values also) and we can see the obvious consequence of the mean decreasing by around 5 years. In terms of peaks, we can observe the same phenomenon as in the age variable. The distribution is right skewed in both cases. We decided that we also clear the extreme observations that can be seen on the following figure (they are the ones over 28).
+
+```{r vehicleAge, echo = TRUE}
+ggplot(motorcycle.red, aes(y=vehicleAge, x="")) + 
+  labs(x = "vehicleAge",y = "", title = "Vehile age in the reduced dataset") + 
+  geom_boxplot(outlier.colour = "red", outlier.shape = 1)
+
+```
+
+* **bonusClass**: The distribution has not changed a lot by the reduction, it is clear that those in bonus class 7 are also the observations with the highest durations.
+
+* **duration**: The duration's distribution acts a lot like the age and vehicle age, we have two peaks in the original set and only one in the reduced set. The distribution is highly right skewed. The difference to the mentioned two variables is that the tails from the original set remain in the reduced set.
+
+* **claims**: We cleared the 0 values which makes the majority part of the data. There are way more policies with only one claim than with two ($96\%$ / $4\%$). 
+
+* **cost**: The distribution changed a lot since we cut out once again the most frequent value from the data: the policies with 0 cost. The distribution is very right skewed, the right tail is quite heavy. Obviously, this variable is in a well-defined direct relationship with severity, so we will not include it in any further analyses.
+
+* **severity**: Not very surprisingly, severity's distribution looks quite similar to the distribution of the cost and though it is again quite right skewed, it has a bit more data points closer to the mean because the highest costs are associated with multiple claims. Below is a figure with plots of the log-severity's distribution (density as opposed to normal and qqplot)
+
+
+```{r sev log norm, echo = TRUE, warning=FALSE}
+pdens <- ggplot(motorcycle.red, aes(x=scale(log(severity), T,T))) + 
+  ylab("") + xlab("density of scaled log severity") +
+  geom_density(fill = gray(0.5)) +  
+  stat_function(fun = dnorm, colour = "red")
+pqq <-qplot(sample = scale(log(motorcycle.red$severity),T,T), stat = "qq") +   
+  geom_abline(intercept = 0, slope = 1, color = "blue", size = 1) +
+  xlab("theoretical quantiles") + ylab("log severity (scaled)")
+  
+grid.arrange(pdens, pqq, ncol = 2)
+```
+
+According to the findings above we create the subset we will use for our model:
+
+```{r subset2, echo = TRUE}
+motorcycle.red <- subset(motorcycle.red, zone != 5 & zone != 6  & zone != 7)
+motorcycle.red$zone <- factor(motorcycle.red$zone)
+motorcycle.red <- subset(motorcycle.red, vehicleAge < 29)
+levels(motorcycle.red$mcClass)[7] <- "6"
+motorcycle.red$mcClass <- factor(motorcycle.red$mcClass)
+```
+
+Unfortunately, we cannot say that severity's variance is homogenous so we will have to introduce a weighting for the estimation, but we will get back to this problem later.
+
+### Collinearity of predictors
+
+In order to summarize pairwise association between the continuous variables, we first look at the following scatter plot matrix (including the severity and its log transform).
+
+```{r sctplot mat, echo = TRUE}
+#add log transform
+motorcycle.red$log.severity <- log(motorcycle.red$severity)
+#list of categorical and continuos variables
+disVar <- sapply(motorcycle.red, class) == "factor"
+contVar <- names(which(!disVar))[-(4:5)] #exclude claims and cost
+disVar <- c(names(disVar)[disVar], "claims")
+
+#plot
+cor.print <- function(x, y) {
+  panel.text(mean(range(x)), mean(range(y)),
+             round(cor(x, y), digits = 2)
+             )
+}
+
+splom(motorcycle.red[, contVar], xlab = "",
+      upper.panel = panel.hexbinplot,
+      pscales = 0, xbins = 20,
+      varnames = c("age", "vehicle age", "duration", "severity", "log.severity"),
+      lower.panel = cor.print
+)
+
+```
+
+We can see there is no high correlation between any of the numeric variables, the value $-0.32$ is the strongest one
+but it still constitutes to a quite weak connection. This negative correlation between the vehicle's age and the severity can be a result of insurance companies willing to pay less in case of older cars since they are more probable to have problems due to for example extensive usage throughout the years.
+Regarding the explanatory continuous variables, we can assume that we will not have to be worried about multicollinearity as the highest correlation value is $0.23$ between age and duration.
+
+We also created 2 Spearman correlation matrices similarly to the one in Chapter 3, page 69 of the Textbook (by the Textbook we will refer to *Niels Richard Hansen: Regression with R (2018)*) one with severity and one with its log transform:
+
+```{r spearman mat, echo = TRUE}
+#with severity
+cp1 <- cor(data.matrix(motorcycle.red[,c('age','mcClass', 'vehicleAge', 'bonusClass', 'duration', 'claims','severity')]), 
+          method = 'spearman')
+ord1 <- rev(hclust(as.dist(1-abs(cp1)))$order)
+colPal <- colorRampPalette(c("green", reddish = "tomato"), space = "rgb")(100)
+
+lp1 <- levelplot(cp1[ord1, ord1],
+          xlab="",
+          ylab="",
+          col.regions = colPal,
+          at = seq(-1,1,length.out = 100),
+          colorkey=list(space = "top", labels = list(cex=1.5)),
+          scales = list(x=list(rot=45),
+                        y=list(draw=F),
+                        cex =1.2))
+#with log-severity
+cp2 <- cor(data.matrix(motorcycle.red[,c('age','mcClass', 'vehicleAge', 'bonusClass', 'duration', 'claims', "log.severity")]), 
+          method = 'spearman')
+ord2 <- rev(hclust(as.dist(1-abs(cp2)))$order)
+
+lp2 <- levelplot(cp2[ord2, ord2],
+          xlab="",
+          ylab="",
+          col.regions = colPal,
+          at = seq(-1,1,length.out = 100),
+          colorkey=list(space = "top", labels = list(cex=1.5)),
+          scales = list(x=list(rot=45),
+                        y=list(draw=F),
+                        cex =1.2))
+
+grid.arrange(lp1, lp2, ncol=2, top = "Spearman correlation matrix of ordinal and continuous variables")
+```
+
+The figures show one grouping of the **severity**/**log-severity** and the **vehicle's age**, a second one consisting of the **vehicle's age** and the **number of claims**, then we have **mcClass** and **bonus class** together and the last group's members are **bonus class**, **age** and **duration**. The positive correlation in the last grouping can be interpreted the following way: longer durations should belong to relatively older policyholders and those longer policy durations and potentially more experienced drivers also give space for higher bonus classes. 
+
+To further investigate the relationship of **log.severity** with categorical variables we created the following violin plots (supplemented with median and interdecile range information):
+
+```{r violin, echo = TRUE, warning = FALSE}
+melted_mc <- melt(motorcycle.red[, c("log.severity", disVar)],
+                 id = "log.severity")
+deciles <- function(x) {
+  quan <- quantile(x, c(0.1, 0.5, 0.9))
+  data.frame(ymin = quan[1], y = quan[2], ymax = quan[3])
+}
+ggplot(melted_mc,
+       aes(x = value, y = log.severity)) +
+    geom_violin(scale = 'width', adjust = 2, fill = I(gray(0.8))) +
+    stat_summary(fun.data = deciles, color = "blue") + xlab("") +
+    facet_wrap(~ variable, scale = "free_x", ncol = 5)
+```
+The violin plots show the the estimated probability densities for each variable and indicates the $10\%$, $50\%$  and $90\%$ quantile.
+In regard of male policyholders we observe that the log.severity is higher than of female policyholders, especially if one neglects the few observations with little log.severity of male. In the second plot we can see a decrease in the log.severity with increasing zone. There are small differences between the different zones and mcClasses. Only mcclass 6 shows a bit of a change in structure with a greater amount of high log.severities. In bonus classes 5 and 6 the median of the log-severity is greater and with stepping into higher bonus classes the lower $10\%$ quantile slips higher-and-higher up until class 5. Since we take the average of two claims the range is also more modest. Still the values here are higher when the number of claims is 2. 
+
+A linear regression model
+-------------------------
+
+### Choosing the model
+
+We need to decide which of the predictors we want to include in our linear model. We excluded the cost variable from our analysis, since it is higly correlated with the severity, due to the fact that severity is the cost divided by the number of claims. We also decided to use the log transform of severity in further analyses due to the highly right skewed distribution and high scale variability that can be compressed by log transformation. Furthermore, the response variable gets closer to the normal distribution after log transformation and as it can be seen from the following models, higher R-squared values and later smaller AIC values for the models using the log-severity.
+
+```{r linearmodel, echo = TRUE}
+form <- log.severity~age+gender+zone+mcClass+vehicleAge+bonusClass+duration
+nulmodel <- lm(log.severity~1,data=motorcycle.red)
+onetermmodels<-add1(nulmodel,form,test="F")
+pander(onetermmodels)
+```
+
+We tested if the inclusion of each of the predictors by themselves is significant. It can be seen that **age**, **zone** and **vehicle age** are the most significant variables, so they seem to be the best predictors for severity. The rest of the predictors are not strongly correlated with each other as we have seen earlier, so we do not have any reason not to include them in our model, so we will fit a weighted linear model to these predictors. The weight is required because of the heterogeneous variance of the **severity** which is conditioned on the **claims** (number of claims per policy) - the weight is added to the model to adjust for this.
+
+```{r logtrans, echo = TRUE}
+weight <- motorcycle.red$claims #adding the weight to the model
+regr <- lm(severity~age + gender + zone + mcClass + vehicleAge + bonusClass + duration,
+           weights = weight,
+           data = motorcycle.red)
+pander(summary(regr))
+AIC(regr)
+
+logregr <- lm(log.severity ~ age + gender + zone + mcClass + vehicleAge + bonusClass + duration, 
+              weights = weight,
+              data = motorcycle.red)
+pander(summary(logregr))
+AIC(logregr)
+```
+
+```{r qqplot logvsnonlog, echo = TRUE, warning = FALSE}
+pnl <- qplot(sample = scale(regr$resid,T,T), stat = "qq") +
+  geom_abline(intercept = 0, slope = 1, color = "blue", size = 1) +
+  xlab("theoretical quantiles") + ylab("regression with severity")
+pl <- qplot(sample = scale(logregr$resid,T,T), stat = "qq") +
+  geom_abline(intercept = 0, slope = 1, color = "blue", size = 1) +
+  xlab("theoretical quantiles") + ylab("regression with log severity")
+
+grid.arrange(pnl, pl, ncol = 2)
+```
+
+```{r linearFtest, echo = TRUE}
+pander(drop1(logregr,test="F"))
+```
+
+It can be seen that by taking the logarithm of the severity variable, we get a better model fit as the higher adjusted R-squared value shows.
+
+The **age** variable is significant and it has a negative sign, which means that the older the person the lower the average cost per claim. It can be a result of that younger people especially with less skills and experience tend to have higher and more frequent claims.
+
+**Zones 3 and 4** seem to have a significant negative effect on severity, compared to the base group, Zone 1.
+
+**Bonusclass 5 and 6** are borderline significant, they increase the average cost per claim, which we find difficult to interpret since we do not have enough background information.
+
+The **vehicleage** seems to be a really good predictor. It has a negative impact on the response variable since usually older cars are worth less. As a result, the insurance companies pay less for any damage done to them. 
+
+The remaining predictors are not strongly correlated, but yet we do not have any reason not to include them in our model.
+
+
+```{r linearmod, echo = TRUE}
+tomelt <- motorcycle.red[,contVar]
+mMotor <- melt(tomelt[,-4],id.vars = "log.severity")
+binScale <- scale_fill_continuous(breaks = c(1,10,10,1000),
+                                low = "gray80", high = "black",
+                                trans = "log", guide = "none")
+
+qplot(value,log.severity,data = mMotor,xlab = "",geom = "hex")+
+  stat_bin_hex(bins=16) + binScale +
+  facet_wrap(~variable,scales = "free_x",ncol=3) +
+  geom_smooth(size=1,method="lm")
+```
+
+The above figure shows the scatterplots of log-severity against the continuous variables. 
+
+
+### Model diagnostics
+
+```{r residuals, echo = TRUE, warning = FALSE}
+motorDiag<-fortify(logregr)
+p1<-qplot(.fitted,.stdresid,data=motorDiag,geom="hex")+
+  binScale+geom_smooth(size=1)+
+  xlab("fitted values")+ylab("deviance residuals")
+  
+p2<-qplot(log.severity,.stdresid,data=motorDiag,geom="hex")+
+binScale+stat_binhex(bins=25)+geom_smooth(size=1)+
+xlab("logseverity")+ylab("")
+
+p3<-qplot(sample=.stdresid,data=motorDiag, stat="qq")+
+geom_abline(intercept=0,slope=1, color="blue",size=1)+
+xlab("theoretical quantiles")+ylab("")
+
+grid.arrange(p1,p2,p3,ncol=3)
+```
+
+Based on the figures, our model does not seem to be spot on, there is a non-linear effect that our linear model can not explain. The residuals seem to be roughly following normal distribution, but we can see the heavier upper tail on the qqplot.
+
+### Model improvements: nonlinear terms
+We will start with looking at possible nonlinear expansions and for this we create the following residual plots of the univariate lm models separately including the continuous explanatory variables:
+
+
+```{r echo = TRUE, warning=FALSE}
+severityLmAge <- lm(severity ~ age, data = motorcycle.red, 
+                 weights = weight)
+severityLmVehicleAge <- lm(severity ~ vehicleAge, data = motorcycle.red, 
+                 weights = weight)
+severityLmDur <- lm(severity ~ duration, data = motorcycle.red, 
+                 weights = weight)
+
+p1 <- qplot(severityLmAge$residuals, severityLmAge$fitted.values) + 
+  geom_smooth(size = 1) + 
+  xlab(".fitted (severity ~ age)") + ylab(".residuals") 
+p2 <- qplot(severityLmVehicleAge$residuals, severityLmVehicleAge$fitted.values) + 
+  geom_smooth(size = 1) + 
+  xlab(".fitted (severity ~ vehicleAge)") + ylab(".residuals")
+p3 <- qplot(severityLmDur$residuals, severityLmDur$fitted.values) + 
+  geom_smooth(size = 1) + 
+  xlab(".fitted (severity ~ duration)") + ylab(".residuals")
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+In all three cases we should try a nonlinear basis expansion. The knots are automatically chosen by the ns function, the boundary knots are given by the range of the variables and 3 or 4 knots are used.
+
+```{r echo = TRUE, warning = FALSE}
+formLm_full_nl <- log(severity) ~ ns(vehicleAge, df = 3, Boundary.knots = c(0,28)) + gender + zone + ns(age, df = 2, Boundary.knots = c(16,55)) + ns(duration, df = 2) + mcClass + bonusClass
+
+severityLm_full_nl <- lm(formLm_full_nl, 
+                         data = motorcycle.red, 
+                         weights = weight)
+
+
+#plot residuals
+severityDiag_full_nl <- fortify(severityLm_full_nl)
+severityDiag_full_nl$.pearson <- residuals(severityLm_full_nl, type = "pearson")
+
+p1 <- qplot(.fitted, .resid, data = severityDiag_full_nl) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Deviance residuals") 
+p2 <- qplot(.fitted, .pearson, data = severityDiag_full_nl) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Pearson residuals")
+
+grid.arrange(p1, p2, ncol = 2)
+pander(summary(severityLm_full_nl))
+```
+```{r echo = FALSE, warning= FALSE}
+paste("AIC:", round(AIC(severityLm_full_nl), digits = 2))
+```
+
+```{r echo = TRUE, warning= FALSE}
+qplot(sample = scale(severityLm_full_nl$resid,T,T), stat = "qq") +
+  geom_abline(intercept = 0, slope = 1, color = "blue", size = 1) +
+  xlab("theoretical quantiles") + ylab("regression with severity")
+
+```
+The non-linear extension gives us clearly better results. We observe fairly good residual and QQ-plots. However, both plots indicate heavier distributions on the tails. Therefore, to attain a better result, we continue with the heavy-tailed log-gamma distribution in a generalized linear model in the following section.
+
+Generalized linear model: Log-Gamma
+------------------------------------------------
+
+### Choosing the model 
+
+We will look at model-fit and model assumptions on the go to have a more holistic overview.
+
+In the following section we try to fit a generalized linear log-gamma model to severity. The justification of using a log transformation can be found in the previous sections.
+First, we try a version with the identity link and the **log(severity)** then we will see if the one with the **severity** and log-link is better. 
+
+
+```{r loggamma_1, echo = TRUE}
+weight <- motorcycle.red$claims #adjsuting for heterogenous variance
+formGlm_full <- log.severity ~ vehicleAge + gender + zone + bonusClass + age + duration + mcClass
+
+severityGlm_null <- glm(log.severity ~ 1, data = motorcycle.red, 
+                 family = Gamma(link = "identity"),
+                 weights = weight)
+
+severityGlm_full <- glm(formGlm_full, data = motorcycle.red, 
+                 family = Gamma(link = "identity"),
+                 weights = weight)
+```
+
+******
+Let us check the model fit:
+
+```{r modelfit_full, echo = TRUE, warning=FALSE}
+severityDiag_full <- fortify(severityGlm_full)
+severityDiag_full$.pearson <- residuals(severityGlm_full, type = "pearson")
+
+p1 <- qplot(.fitted, .resid, data = severityDiag_full) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Deviance residuals") 
+p2 <- qplot(.fitted, sqrt(abs(.resid)), data = severityDiag_full) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Pearson residuals")
+
+grid.arrange(p1, p2, ncol = 2)
+```
+```{r modelfitres_full, echo = TRUE}
+psihat <- summary(severityGlm_full)$dispersion
+pseudoResid <- pgamma(motorcycle.red$log.severity, 
+                      shape = 1 / psihat, 
+                      scale = psihat * fitted(severityGlm_full))
+                      
+qplot(ppoints(length(pseudoResid)), sort(pseudoResid)) +
+  geom_abline(intercept = 0, slope = 1, color = "blue")
+```
+
+The residual plots do not look much better than the linear lognormal model's and the pp-plot also looks a bit off. Let's check the log-link version too.
+
+```{r loggamma_2, echo = TRUE}
+weight <- motorcycle.red$claims #adjsuting for heterogenous variance
+formGlm_full <- severity ~ vehicleAge + gender + zone + bonusClass + age + duration + mcClass
+
+severityGlm_null <- glm(severity ~ 1, data = motorcycle.red, 
+                 family = Gamma(link = "log"),
+                 weights = weight)
+
+severityGlm_full <- glm(formGlm_full, data = motorcycle.red, 
+                 family = Gamma(link = "log"),
+                 weights = weight)
+```
+
+Let us check the model fit again:
+
+```{r modelfitres_full2, echo = TRUE, warning=FALSE}
+severityDiag_full <- fortify(severityGlm_full)
+severityDiag_full$.pearson <- residuals(severityGlm_full, type = "pearson")
+
+p1 <- qplot(.fitted, .resid, data = severityDiag_full) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Deviance residuals") 
+p2 <- qplot(.fitted, sqrt(abs(.resid)), data = severityDiag_full) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("")
+
+grid.arrange(p1, p2, ncol = 2)
+```
+
+```{r modelfit_full2, echo = TRUE}
+psihat <- summary(severityGlm_full)$dispersion
+pseudoResid <- pgamma(motorcycle.red$severity, 
+                      shape = 1 / psihat, 
+                      scale = psihat * fitted(severityGlm_full))
+                      
+qplot(ppoints(length(pseudoResid)), sort(pseudoResid)) +
+  geom_abline(intercept = 0, slope = 1, color = "blue")
+```
+
+The second model (with the log-link) seem to be a better fit for the distribution in the upper tail (see pp-plot above). The residual plots give us a clear indication that we should introduce nonlinear terms to the model. We will move on with this "log-link" model. We will also try some interaction terms.
+
+Before we go on to the potential extensions of the model, we look at whether there is any change in the significance of the inclusion of individual predictors to the simple linear model.
+
+```{r loggamma_null, echo = TRUE}
+pander(
+  add1(severityGlm_null, formGlm_full, test ="F")[
+    order(
+          add1(severityGlm_null, formGlm_full, test ="F")[,5],decreasing = F
+          ),]
+  ) 
+```
+
+Some variables' p-values changed by a lot and some just stayed around the same level. **gender** and **mcClass** are much more significant and we have **vehicle age** and **zone** as stronger predictors.
+
+As we did above, we check the model adding all the possible variables (without interactions yet) as the number of observations does not constrain us from fitting a complicated model ($observations/10 = 63.6$) which means we have quite a lot of degrees of freedom to spend. We also look at the table showing the tests of excluding each term of this model. 
+
+```{r loggamma_full, echo = TRUE}
+pander(summary(severityGlm_full))
+```
+
+
+What we have so far is that the average cost per claim is smaller with increasing **vehicle age** which makes sense intuitively as mentioned (e.g.: older vehicle usually means that it is cheaper and the claim size reflects this). 
+
+In case of the differences between **zones** we might want to think about it as the countryside (zones 3-4) being a bit cheaper for the insurance company in terms of severity. 
+
+**Age** has a significant but small negative coefficient which suggests that our guess in the exploratory phase seems confirmed: the younger the policyholders are the more they tend to cost on average per claim for the insurer. 
+
+The coefficients of the different **bonus classes** of the policies show that bonus classes 5-7 tend to be different from the other ones (they are more costly) - we are not sure why that is. 
+
+The **mcClass** 6 (and 7 since we added those 4 observations here in the beginning) is significantly greater in terms of severity than the first vehicle performance class in the reference group. This relationship seems legitimate in the light of higher performing vehicles tend to be more expensive. The other significantly higher average cost belongs to **mcClass** 3 which is a bit harder to explain. We tried to look into why this can be and we found (https://www.ncbi.nlm.nih.gov/pubmed/20146148) that with higher power-to-weight the risk of accidents are increasing. The coefficients of the **mcClasses** 2 and 3 constitute to this fact, but classes after have a bit smaller coefficient as opposed to 3. On the other hand, within **mcClasses** 4-6 we can again see a monotonous increase in the coefficients.
+
+Although, the **gender** variable's coefficient is not exactly significant it seems validated from the data that male policyholders tend to cost a bit more. 
+
+We can see in both the summary table and the table on exclusion above that the **duration**'s coefficient in the model is not very significant but we will refrain from leaving it from the model just yet.
+
+### Model improvements: nonlinear and interaction terms
+
+```{r nonlin, echo = TRUE, warning=FALSE}
+formGlm_full_nl <- severity ~ ns(vehicleAge, df = 3, Boundary.knots = c(0,28)) + gender + zone + ns(age, df = 2, Boundary.knots = c(16,55)) +                        ns(duration, df = 2) + mcClass + bonusClass
+
+severityGlm_full_nl <- glm(formGlm_full_nl, data = motorcycle.red, 
+                 family = Gamma(link ="log"),
+                 weights = weight)
+#plot residuals
+severityDiag_full_nl <- fortify(severityGlm_full_nl)
+severityDiag_full_nl$.pearson <- residuals(severityGlm_full_nl, type = "pearson")
+
+p1 <- qplot(.fitted, .resid, data = severityDiag_full_nl) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Deviance residuals") 
+p2 <- qplot(.fitted, .pearson, data = severityDiag_full_nl) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Pearson residuals")
+
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+The residuals look better but there is still space for improvement: interaction terms might help. 
+
+BEfore moving on though, we want to assess whether the pp-plot for the model with nonlinear basis expansions shows the right distributional match with the exponential dispersion model (Gamma in our case).
+
+``` {r distr_nonlin, echo = TRUE, warning=FALSE} 
+psihat <- summary(severityGlm_full_nl)$dispersion
+pseudoResid <- pgamma(motorcycle.red$severity, 
+                      shape = 1 / psihat, 
+                      scale = psihat * fitted(severityGlm_full_nl))
+                      
+qplot(ppoints(length(pseudoResid)), sort(pseudoResid)) +
+  geom_abline(intercept = 0, slope = 1, color = "blue")
+
+```
+
+The pp-plot looks a bit less appealing as it did for the glm model without nonlinear basis expansions. 
+Nevertheless, according to the analysis of variance table below the new model provides a better fit:
+
+```{r anovatableglm, echo = TRUE, warning=FALSE}
+anova(severityGlm_full, severityGlm_full_nl, test="LRT")
+```
+
+We should also look at possible interaction terms to decide on the final model. Referring back to our findings in the exploratory section (the Spearman correlation matrix), we know that there is some positive correlation between the age and the bonusClasses.
+
+```{r age BonusClass, echo = TRUE, warning=FALSE}
+ggplot(motorcycle.red, aes(bonusClass, age, fill = bonusClass)) + geom_boxplot()
+```
+
+We can clearly see some differences in the **age** variable dependent upon the **bonus class** - typically in **bonus class** 7 there are older people which makes sense in terms of the policies with the highest duration should belong to older and more experienced drivers (see duration and bonus class 7 below). 
+
+```{r dur BonusClass, echo = TRUE, warning=FALSE}
+ggplot(motorcycle.red, aes(bonusClass, duration, fill = bonusClass)) + geom_boxplot()
+```
+
+Below, we tried adding this interaction to the model and check whether AIC shows improvement.
+
+```{r interact, echo = TRUE, warning=FALSE}
+#AGE & BONUS CLASS
+formGlm_full_ia <- severity ~ ns(vehicleAge, df = 3, Boundary.knots = c(0,28)) + gender + zone + age:bonusClass + ns(duration, df = 3) + mcClass
+
+severityGlm_full_ia <- glm(formGlm_full_ia, data = motorcycle.red, 
+                 family = Gamma(link = "log"),
+                 weights = weight)
+
+AIC(severityGlm_full_nl) 
+AIC(severityGlm_full_ia) #around the same
+```
+Unfortunately we do not see the desired improvement in the AIC, on the other hand the model assumptions seem to work out much better for this model:
+
+```{r interactplot, echo = TRUE, warning=FALSE}
+severityDiag_full_ia <- fortify(severityGlm_full_ia)
+severityDiag_full_ia$.pearson <- residuals(severityGlm_full_ia, type = "pearson")
+
+p1 <- qplot(.fitted, .resid, data = severityDiag_full_ia) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Deviance residuals") 
+p2 <- qplot(.fitted, .pearson, data = severityDiag_full_ia) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Pearson residuals")
+
+grid.arrange(p1, p2, ncol = 2)
+
+```
+
+Above we can check the residual plot for this interaction and it looks suprisingly good. We can see the trace of some outliers in the severity data (probably those above ~$80000$ but we do not want to eliminate those as they are part of the natural dataset).
+
+Let's see whether the model assumptions are satisfied as well:
+
+``` {r distr_interact, echo = TRUE, warning=FALSE} 
+psihat <- summary(severityGlm_full_ia)$dispersion
+pseudoResid <- pgamma(motorcycle.red$severity, 
+                      shape = 1 / psihat, 
+                      scale = psihat * fitted(severityGlm_full_ia))
+                      
+qplot(ppoints(length(pseudoResid)), sort(pseudoResid)) +
+  geom_abline(intercept = 0, slope = 1, color = "blue")
+
+```
+
+We get quite a good-looking pp-plot, much better than the one without the interaction term above.
+Let's look at the summary of the model: 
+
+```{r nonlinsummary, echo = TRUE, warning=FALSE}
+pander(summary(severityGlm_full_ia))
+```
+
+The analysis of deviance table shows this model provides a better fit as opposed to the first glm model above without the nonlinear and interaction terms. We should be careful not to overfit the model as well, but our findings so far seem to be justified.
+
+```{r anovatableglm2, echo = TRUE, warning=FALSE}
+anova(severityGlm_full, severityGlm_full_ia, test="LRT")
+```
+
+Regarding the residuals one of our concerns is that the fit on the deviance residuals with the confidence interval seems to be below 0 and the values go quite high up. We take a look at the same model with nonlinear expansions and the interaction term, but once again, we fit it to **log-severity** and use the identity link:
+
+```{r nonlin_ident, echo = TRUE, warning=FALSE}
+formGlm_full_nl2 <- log.severity ~ ns(vehicleAge, df = 3, Boundary.knots = c(0,28)) +
+  gender + zone + age:bonusClass + ns(duration, df = 2) + mcClass 
+
+severityGlm_full_nl2 <- glm(formGlm_full_nl2, data = motorcycle.red, 
+                 family = Gamma(link ="identity"),
+                 weights = weight)
+#plot residuals
+severityDiag_full_nl2 <- fortify(severityGlm_full_nl2)
+severityDiag_full_nl2$.pearson <- residuals(severityGlm_full_nl2, type = "pearson")
+
+p1 <- qplot(.fitted, .resid, data = severityDiag_full_nl2) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Deviance residuals") 
+p2 <- qplot(.fitted, .pearson, data = severityDiag_full_nl2) + 
+  geom_smooth(size = 1) + 
+  xlab("fitted values") + ylab("Pearson residuals")
+
+grid.arrange(p1, p2, ncol = 2)
+```
+```{r nonlin_identres, echo = TRUE, warning=FALSE}
+psihat <- summary(severityGlm_full_nl2)$dispersion
+pseudoResid <- pgamma(motorcycle.red$log.severity, 
+                      shape = 1 / psihat, 
+                      scale = psihat * fitted(severityGlm_full_nl2))
+                      
+qplot(ppoints(length(pseudoResid)), sort(pseudoResid)) +
+  geom_abline(intercept = 0, slope = 1, color = "blue")
+
+```
+
+```{r echo = TRUE, warning= FALSE}
+
+AIC(severityGlm_full_ia)
+AIC(severityGlm_full_nl)
+AIC(severityGlm_full_nl2)
+```
+The pp-plot looks worse but the residuals seem to behave much better than the ones in case of the log-link. 
+
+
+### Conclusion
+We started modelling our reduced data set with a simple Linear Model. We created one for the severity and one for the log.severity response variable. Both models gave us unsatisfactory residual plots and left some space for improvement. In the previous analysis of our data we figured out that there exists some non-linearity and interaction for specific variables. Taking this into account for our models we got some better results. Still we could not arrive at a model with more than 15-20% adjusted R-squared. This means even if our model improved somewhat the new fit only explain little variance of the severity. 
+
+So far all models indicated some haeavy tailed distribution which led us to a Generalized Linear Model with a gamma distribution. We compared our different models on the go, and we think our final log-gamma fit with the linear basis expansions and interaction term gave us a better understanding and good description of the behaviour of the data.
+
+Finally, the identity-linked Generalized Linear Model of the log.severity response with the interaction term between **age** and **bonus class** and the non-linear expansion for **vehicle age** and **duration** looks the most appealing to us. The PP plot shows a slight skewness, but the residual plots look very good. The residuals are symmetrical (vertically) around the 0 line. We received similiar good results for the same model with severity response and log-link. It has a really good PP plot, on the other hand its residual plots look a bit odd. Also in regard of the AIC value the log-identity model seems to be the better choice. 
+
+```{r pred, echo = TRUE, warning=FALSE}
+predFrame <- expand.grid(age = median(motorcycle.red$age),
+                         gender = factor(c("M")),
+                         zone = factor(c(1,3)),
+                         mcClass = factor(c(1,3)),
+                         vehicleAge = 0:29,
+                         duration = median(motorcycle.red$duration),
+                         bonusClass = factor(c(3,6)))
+
+predseverity <- predict(severityGlm_full_nl2, newdata = predFrame, se.fit = TRUE)
+
+predFrame <- cbind(predFrame, predseverity)
+
+qplot(vehicleAge, exp(fit), data = predFrame,geom = "line", color = zone) + 
+  ylab("severity") + geom_ribbon(aes(ymin = exp(fit - 2*se.fit),
+                                     ymax = exp(fit + 2*se.fit), fill = zone),
+                               alpha = 0.3) +
+  facet_grid(mcClass ~ bonusClass , label = label_both) +
+  coord_cartesian(ylim = c(0, 150000))
+```
+
+Above we show our predictions in a simulated dataset (we choose **age** to be the median, we look at the relationship with **vehicleAge** withing the range that we used for the data). We see the differences between the country-side and the city (**zones** 3 versus 1) and we can see that our model indeed predicts a higher severity for the cities.**Bonus class** 3 and 6 are used to show (reflectiong back to our findings for the violin plots) that in **bonus class** 6 our model indeed predicts higher severity than in the 3rd one.
