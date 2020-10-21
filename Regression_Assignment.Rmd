@@ -1,6 +1,6 @@
 ---
 title: 'Regression Practical Assignment 2018: Motorcycle insurance data'
-author: "P?ter P?l?s, Laura Perge, Ferdinand Popp"
+author: "P?ter P?l?s"
 date: "March 5, 2018"
 output:
   html_document:
