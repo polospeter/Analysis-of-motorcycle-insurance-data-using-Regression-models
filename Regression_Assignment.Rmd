@@ -3,7 +3,7 @@ title: 'Regression Practical Assignment 2018: Motorcycle insurance data'
 author: "P?ter P?l?s"
 date: "March 5, 2018"
 output:
-  html_document:
+  rmarkdown::github_document:
     fig_height: 7
     fig_width: 10
     theme: readable
